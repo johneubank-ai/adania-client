@@ -1,58 +1,46 @@
-# adania-client
+# Adania Client
 
-A separate **web UI** (not deployed — design/mock only) that lets **provisioned org users** (including non-owner **members**) log into their Adania account and use **managed bots over a new "web ui" surface**. First concrete agent: **InterviewAssistant**.
+The macOS desktop app an org member runs to host their assigned **Desktop-app** agents. It signs you in
+(Cognito), fetches the agents assigned to you, holds a reverse **WebSocket** to the Adania relay, and runs
+each turn locally via the Claude Agent SDK — so events from Slack/Linear/GitHub are answered on your machine
+without exposing any inbound port. Built with **Deno Desktop** (Next.js UI + Deno runtime in one binary).
 
-This folder is **analysis + mock only**. Nothing here is wired to the real `adania` backend.
+## Install (one command)
 
-- `mockup.html` — open in a browser. A clickable mock of the adania-client for an org **member** (the interviewer) with a **single** available agent, *InterviewAssistant*. Shows login → agent → live interview (recording + rolling transcript + questions that refresh every 10 min + Slack notify on start/stop).
-- `INCONSISTENCIES.md` — where the brief / the two sequence diagrams / the existing `adania` repo disagree, with file:line refs and reconciliations. **Read this first.**
-
-## What the brief asks for (captured, not built)
-- A **"web ui" surface** for managed bots (a 4th surface alongside slack/linear/github) — **app-less**: the client is inside the org's Cognito trust boundary and talks to the runtime directly (no external app/webhook/install).
-- Login for **provisioned org users incl. members** (reuse the Cognito *customers* pool).
-- The agent is **not @-mentionable** on github/linear/slack — it's reached only from this web UI.
-- **InterviewAssistant** with **Slack MCP tools** in its config: posts **on behalf of the human interviewer** to a **web-UI-configured channel** when an interview **begins**, and a **notification** when it **ends**.
-- On **first managed-agent init**, create an **`adania-resources`** repo in the org's GitHub org (see `INCONSISTENCIES.md` §D — ambiguous; recommend org-level provisioning, not per-member).
-- The interviewer is a **member** (not the org owner).
-
-## Minimal interview sequence (the consistent model)
-
-```mermaid
-sequenceDiagram
-    actor IE as Interviewee
-    actor IR as Interviewer (member)
-    participant UI as adania-client Web UI<br/>(records audio)
-    participant TS as Transcription Service
-    participant MA as Managed Agent Service
-
-    IR->>UI: Start interview (choose Slack channel)
-    UI->>MA: Open thread (bot = InterviewAssistant, surface = web)
-    MA-->>UI: thread_id
-    MA->>MA: Slack MCP → post "interview started" to the channel
-
-    loop Every 10 minutes
-        IE->>UI: speaks
-        IR->>UI: speaks
-        UI->>TS: stream audio
-        TS-->>UI: transcript text
-        UI->>MA: append transcript (thread_id)
-        Note over MA: thread retains prior chunks,<br/>targets coverage gaps
-        MA-->>UI: next questions (focus shifted)
-        UI-->>IR: show questions
-    end
-
-    IR->>UI: Stop interview
-    UI->>MA: end thread
-    MA->>MA: Slack MCP → post "interview ended" notification
+```sh
+./install.sh
 ```
 
-Differences from the **detailed** diagram in the brief (and why): that one used a native **Mac app** that **transcribes locally**. A browser web UI can *record* but live local transcription is heavy/inconsistent — so transcription is its own service actor here. See `INCONSISTENCIES.md` §A.
+It ensures Deno (canary — `deno desktop`), ensures pnpm, builds the UI, compiles the native `.app` into
+`dist/AdaniaClient.app`, confirms the Keychain is usable, and opens the app. Re-run any time to rebuild.
 
-## How it would attach to the real backend (future, not built)
-- **Login:** NextAuth → the existing **`cognito-customers`** pool (members resolve via `requireOrganization`).
-- **Bots list:** a new authed `GET /api/bots` (org-membership-scoped) — does not exist yet.
-- **Open/append/stream a thread:** a new authed `POST /api/bots/[botId]/session` + message append, keyed into the **existing** surface-generic `web.bot_thread` with `surface="web"`. The unauthed demo `/api/sessions(/[runId]/messages)` is **not** safe for a browser.
-- **Slack notify:** either the org **bot token** (post as the bot, ship-now) or a **per-member Slack vault + `/api/mcp/slack`** (post truly as the interviewer, net-new — mirrors the GitHub MCP).
-- **Channel config:** stored on the bot, picker fed by the org Slack bot token, exposed as a **member-allowed** setting.
+**Prereqs it can't auto-install:** Node.js 18+ (https://nodejs.org), and you must be **logged into Claude
+Code on this machine** — the local runner uses that ambient login to run turns.
 
-> The platform pitch: build software serving many tenants in the interviewer's domain; the expert interviewer is the prime high-experience tenant. The InterviewAssistant is the first vertical; the **web ui** surface + per-member Slack act-as-self are the reusable platform additions it forces.
+## Using it
+
+1. **Sign in with Cognito** → the app shows your organizations, lets you pick one, and lists that org's
+   **web channels** (the Desktop-app agents assigned to you).
+2. Keep the app open — it holds the reverse-WS connection. The status row shows **Relay: connected**.
+3. An org admin assigns you to a Desktop-app agent in the portal (`app.adania.johneubank.ai` → the agent's
+   **Configure** page). When that agent is @-mentioned on its channel, the event routes through the Adania
+   relay to your app, runs locally, and the reply is posted back as the agent. Undeliverable events are
+   logged on the agent's **Missed events** page (with Retry).
+
+## How it works
+
+- **Auth:** Cognito Authorization-Code + PKCE (public desktop client, no secret). The id_token is
+  JWKS/RS256-verified; the session token is stored in the macOS **Keychain** (0600-file fallback).
+- **Transport:** the app dials `wss://app.adania.johneubank.ai/api/relay/ws` (the relay-gw), authenticates
+  with a hello frame, receives `event` frames, runs them via the Agent SDK, and returns `reply` frames.
+  The channel webhook is member-agnostic (points at the relay), so swapping the assignee needs no changes.
+- **Config fetch:** `GET /api/bots` returns your orgs, your assigned agents + their AgentConfig, and the
+  relay URL — no agent secrets ever reach the client.
+
+## Layout
+
+```
+app/         the Deno Desktop app (Next.js: UI + lib/agent-node.ts reverse-WS node + OAuth)
+install.sh   one-command macOS install/build/launch
+dist/        built .app (gitignored)
+```

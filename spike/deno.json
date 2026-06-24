@@ -1,8 +1,0 @@
-{
-  "tasks": {
-    "probe": "deno run --allow-read --allow-write --allow-run --allow-env probe_spawn.ts",
-    "step1": "deno run --allow-read --allow-write --allow-run --allow-env --allow-sys --allow-net step1_spawn.ts",
-    "gateway": "deno run --allow-net --allow-env stub_gateway.ts",
-    "step2": "deno run --allow-read --allow-write --allow-run --allow-env --allow-sys --allow-net step2_ws.ts"
-  }
-}

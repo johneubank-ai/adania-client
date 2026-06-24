@@ -32,7 +32,7 @@ async function runTurn(messages: { role: string; content: string }[]): Promise<s
 // --- fetch the member's orgs + assigned Desktop-app bots + relay URLs, then hold the SSE relay ---
 let relayRunning = false;
 async function bootSession(idToken: string): Promise<void> {
-  let data: { orgs?: unknown[]; bots?: unknown[]; relay?: { events: string; reply: string } };
+  let data: { orgs?: unknown[]; bots?: unknown[]; relay?: { ws?: string; events?: string; reply?: string } };
   try {
     const r = await fetch(`${ADANIA_API}/api/bots`, { headers: { authorization: `Bearer ${idToken}` } });
     if (!r.ok) {
@@ -50,14 +50,65 @@ async function bootSession(idToken: string): Promise<void> {
     relayEvents: data.relay?.events ?? "",
     relayReply: data.relay?.reply ?? "",
   });
-  if (data.relay?.events && data.relay?.reply && !relayRunning) {
+  if (relayRunning) return;
+  if (data.relay?.ws) {
     relayRunning = true;
-    void relayLoop(idToken, data.relay.events, data.relay.reply);
+    relayLoopWs(idToken, data.relay.ws); // Option B: true WebSocket (preferred)
+  } else if (data.relay?.events && data.relay?.reply) {
+    relayRunning = true;
+    void relayLoop(idToken, data.relay.events, data.relay.reply); // SSE fallback
   }
 }
 
-// Reverse connection: dial the SSE endpoint with the Bearer token (fetch streaming — EventSource can't set
-// auth headers), parse `event: turn` frames, run each locally, POST the reply, reconnect with backoff.
+// Option B (preferred): a true WebSocket to the relay-gw. Authenticate with a hello frame (Deno's
+// WebSocket can't set auth headers), receive `event` frames, run each locally, send `reply` frames back
+// over the same socket; reconnect with backoff. The gw sends WS pings, which Deno auto-pongs (keepalive).
+function relayLoopWs(token: string, wsUrl: string): void {
+  let backoff = 1000;
+  const connect = () => {
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      backoff = 1000;
+      ws.send(JSON.stringify({ type: "hello", token }));
+    };
+    ws.onmessage = async (ev: MessageEvent) => {
+      let f: { type?: string; error?: string; turnId?: string; payload?: { messages?: { role: string; content: string }[] } };
+      try {
+        f = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      if (f.type === "ready") {
+        await patchState({ socket: "connected" });
+        return;
+      }
+      if (f.type === "error") {
+        await patchState({ socket: `relay error: ${f.error}` });
+        return;
+      }
+      if (f.type === "event" && f.turnId) {
+        const reply = await runTurn(f.payload?.messages ?? []);
+        const s = await readState();
+        await patchState({ turns: s.turns + 1, lastEvent: f.turnId, lastReply: reply });
+        try {
+          ws.send(JSON.stringify({ type: "reply", turnId: f.turnId, reply }));
+        } catch {
+          /* socket dropped mid-reply → server times out the turn → portal Retry covers it */
+        }
+      }
+    };
+    ws.onclose = () => {
+      void patchState({ socket: "reconnecting…" });
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 15000);
+    };
+    ws.onerror = () => {};
+  };
+  connect();
+}
+
+// SSE fallback: dial the SSE endpoint (fetch streaming — EventSource can't set auth headers), parse
+// `event: turn` frames, run each locally, POST the reply, reconnect with backoff.
 async function relayLoop(token: string, eventsUrl: string, replyUrl: string): Promise<void> {
   let backoff = 1000;
   for (;;) {
