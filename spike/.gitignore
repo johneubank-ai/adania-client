@@ -1,0 +1,6 @@
+# large/disposable spike artifacts — do not commit
+vendor/
+bin/
+**/node_modules/
+**/.next/
+**/.pnpm-store/

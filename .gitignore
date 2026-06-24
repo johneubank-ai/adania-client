@@ -1,0 +1,42 @@
+# === secrets & local state — NEVER commit ===
+.env
+.env.*
+!.env.example
+tokens.json
+*.pem
+*.key
+*.p12
+id_rsa*
+.adania-client/
+
+# === dependencies / build output ===
+node_modules/
+.next/
+.pnpm-store/
+out/
+dist/
+.turbo/
+
+# === deno desktop / deno compile outputs ===
+bin/
+*.app/
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.msi
+*.exe
+denort*
+
+# === vendored binaries (large, redistributable — re-copied at build) ===
+vendor/
+
+# === framework-generated ===
+next-env.d.ts
+*.tsbuildinfo
+
+# === os / editor ===
+.DS_Store
+*.swp
+.idea/
+.vscode/
